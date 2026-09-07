@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.robot.demo.mapper.RobotTaskMapper">
+
+    <!-- 根据业务单号 task_no 查询任务 -->
+    <select id="selectByTaskNo" resultType="com.robot.demo.pojo.po.RobotTaskPO">
+        SELECT
+            id,
+            task_no,
+            robot_code,
+            task_type,
+            task_status,
+            target_position,
+            remark,
+            create_time,
+            update_time
+        FROM robot_task
+        WHERE task_no = #{taskNo}
+    </select>
+
+    <!-- 局部更新：仅更新任务状态为【完成2】，只改task_status、update_time，不碰其他字段 -->
+    <update id="updateTaskStatusComplete">
+        UPDATE robot_task
+        SET
+            task_status = 2,
+            update_time = now()
+        WHERE id = #{id}
+    </update>
+
+    <!-- 将机器人设置为空闲状态 -->
+    <update id="setRobotIdle">
+        update robot_device
+        set status = 0, update_time = now()
+        where robot_code = #{robotCode}
+    </update>
+
+
+
+</mapper>
