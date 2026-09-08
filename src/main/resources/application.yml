@@ -23,7 +23,8 @@ spring:
     password: guest
     listener:
       simple:
-        acknowledge-mode: auto
+        acknowledge-mode: manual   # 手动 ACK
+        default-requeue-rejected: false
 
 mybatis-plus:
   mapper-locations: classpath:mapper/*.xml

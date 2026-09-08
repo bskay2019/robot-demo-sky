@@ -9,6 +9,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class RobotTaskProducer {
 
+    public final static String HEADER_RETRY_COUNT="x-retry-count";
+
     private final RabbitTemplate rabbitTemplate;
 
     public RobotTaskProducer(RabbitTemplate rabbitTemplate) {
@@ -16,12 +18,23 @@ public class RobotTaskProducer {
     }
 
     public void sendTaskMessage(String taskNo) {
-        log.info("【MQ生产者】发送任务消息 taskNo={}", taskNo);
+        sendTaskMessage(taskNo,0);
+    }
+
+    /**
+     * 发送任务消息（可带当前已重试次数）
+     */
+    public void sendTaskMessage(String taskNo, int retryCount) {
+        log.info("【MQ生产者】发送任务消息 taskNo={}, retryCount={}", taskNo, retryCount);
         rabbitTemplate.convertAndSend(
                 RabbitMqConfig.ROBOT_TASK_EXCHANGE,
                 RabbitMqConfig.ROBOT_TASK_ROUTING_KEY,
-                taskNo
+                taskNo,
+                message -> {
+                    message.getMessageProperties().setHeader(HEADER_RETRY_COUNT, retryCount);
+                    return message;
+                }
         );
-        log.info("【MQ生产者】发送成功 taskNo={}", taskNo);
+        log.info("【MQ生产者】发送成功 taskNo={}, retryCount={}", taskNo, retryCount);
     }
 }
