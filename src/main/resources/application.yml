@@ -35,3 +35,10 @@ mybatis-plus:
   global-config:
     db-config:
       id-type: auto
+
+southbound:
+  tcp-port: 9001
+  udp-port: 9002
+  login-token: demo-token
+  heartbeat-timeout-sec: 15
+  worker-threads: 8
