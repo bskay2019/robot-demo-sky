@@ -5,13 +5,10 @@ import lombok.Getter;
 
 @Getter
 @AllArgsConstructor
-public enum TaskStatusEnum {
-    PENDING(0, "待分配"),
-    EXECUTING(1, "执行中"),
-    COMPLETED(2, "已完成"),
-    FAILED(3, "失败"),
-    CANCELLED(4, "已取消");
-
+public enum TaskTypeEnum {
+    PICK(1, "取货"),
+    DELIVER(2, "送货"),
+    INVENTORY(3, "盘点");
     private final Integer code;
     private final String desc;
 
@@ -19,7 +16,7 @@ public enum TaskStatusEnum {
         if (code == null) {
             return "未知";
         }
-        for (TaskStatusEnum e : values()) {
+        for (TaskTypeEnum e : values()) {
             if (e.code.equals(code)) {
                 return e.desc;
             }

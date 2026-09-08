@@ -1,21 +1,24 @@
 package com.robot.demo.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.robot.demo.enums.RobotStatusEnum;
 import com.robot.demo.enums.TaskStatusEnum;
 import com.robot.demo.exception.BizException;
 import com.robot.demo.mapper.RobotDeviceMapper;
 import com.robot.demo.mapper.RobotTaskMapper;
 import com.robot.demo.mq.RobotTaskProducer;
+import com.robot.demo.pojo.dto.TaskCreateDTO;
 import com.robot.demo.pojo.po.RobotDevicePO;
 import com.robot.demo.pojo.po.RobotTaskPO;
+import com.robot.demo.pojo.vo.TaskVO;
 import com.robot.demo.service.RobotDeviceService;
 import com.robot.demo.service.RobotTaskService;
+import com.robot.demo.util.TaskConvert;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.StringUtils;
 
 import java.util.UUID;
 
@@ -38,38 +41,36 @@ public class RobotTaskServiceImpl extends ServiceImpl<RobotTaskMapper, RobotTask
 
     @Transactional(rollbackFor = Exception.class)
     @Override
-    public RobotTaskPO createTask(RobotTaskPO task) {
-        log.info("【创建任务】taskType={}, target={}", task.getTaskType(), task.getTargetPosition());
+    public TaskVO createTask(TaskCreateDTO dto) {
+        log.info("【创建任务】taskType={}, target={}", dto.getTaskType(), dto.getTargetPosition());
 
-        // 1. 生成任务单号
+        RobotTaskPO task = new RobotTaskPO();
+        task.setTaskType(dto.getTaskType());
+        task.setTargetPosition(dto.getTargetPosition());
+        task.setRemark(dto.getRemark());
+
         String taskNo = "TASK" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         task.setTaskNo(taskNo);
         task.setTaskStatus(TaskStatusEnum.PENDING.getCode());
 
-        // 2. 找空闲机器人（可能来自缓存，仅作候选）
         RobotDevicePO idleRobot = robotDeviceService.getIdleRobot();
         if (idleRobot == null) {
             throw new BizException("没有空闲机器人可用，请稍后再试");
         }
 
-        // 3. 原子占机：只有 status=0 才能改成 1
         int occupied = robotDeviceMapper.occupyIdleRobot(idleRobot.getRobotCode());
         if (occupied == 0) {
-            // 缓存可能脏了，清掉后提示重试（也可以在这里循环重试 2~3 次）
             robotDeviceService.clearIdleRobotCache();
             throw new BizException("机器人刚刚被占用，请重试");
         }
 
-        // 4. 绑定机器人，状态改为执行中
         task.setRobotCode(idleRobot.getRobotCode());
         task.setTaskStatus(TaskStatusEnum.EXECUTING.getCode());
         save(task);
         log.info("【创建任务】落库成功 taskNo={}, robotCode={}", taskNo, idleRobot.getRobotCode());
 
-        // 5. 清缓存（这台机器人已不再空闲）
         robotDeviceService.clearIdleRobotCache();
 
-        // 6. 事务提交后再发 MQ，避免回滚后消息已发出
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
@@ -77,6 +78,57 @@ public class RobotTaskServiceImpl extends ServiceImpl<RobotTaskMapper, RobotTask
             }
         });
 
-        return task;
+        return TaskConvert.pOtoVO(task);
+    }
+
+    @Override
+    public TaskVO getByTaskNo(String taskNo) {
+        RobotTaskPO task = getBaseMapper().selectByTaskNo(taskNo);
+        if (task == null) {
+            throw new BizException("任务不存在：" + taskNo);
+        }
+        return TaskConvert.pOtoVO(task);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public TaskVO cancelTask(String taskNo) {
+        log.info("【取消任务】taskNo={}", taskNo);
+
+        RobotTaskPO task = getBaseMapper().selectByTaskNo(taskNo);
+        if (task == null) {
+            throw new BizException("任务不存在：" + taskNo);
+        }
+
+        Integer status = task.getTaskStatus();
+        // 只有待分配、执行中可以取消
+        if (!TaskStatusEnum.PENDING.getCode().equals(status)
+                && !TaskStatusEnum.EXECUTING.getCode().equals(status)) {
+            throw new BizException("当前状态不允许取消：" + TaskStatusEnum.getDescByCode(status));
+        }
+
+        // 乐观更新：防止并发下状态已变仍被取消
+        boolean updated = lambdaUpdate()
+                .set(RobotTaskPO::getTaskStatus, TaskStatusEnum.CANCELLED.getCode())
+                .eq(RobotTaskPO::getId, task.getId())
+                .in(RobotTaskPO::getTaskStatus,
+                        TaskStatusEnum.PENDING.getCode(),
+                        TaskStatusEnum.EXECUTING.getCode())
+                .update();
+
+        if (!updated) {
+            throw new BizException("取消失败，任务状态已变更，请刷新后重试");
+        }
+
+        // 已占用机器人则释放
+        if (StringUtils.hasText(task.getRobotCode())) {
+            getBaseMapper().setRobotIdle(task.getRobotCode());
+            robotDeviceService.clearIdleRobotCache();
+            log.info("【取消任务】已释放机器人 robotCode={}", task.getRobotCode());
+        }
+
+        task.setTaskStatus(TaskStatusEnum.CANCELLED.getCode());
+        log.info("【取消任务】成功 taskNo={}", taskNo);
+        return TaskConvert.pOtoVO(task);
     }
 }
