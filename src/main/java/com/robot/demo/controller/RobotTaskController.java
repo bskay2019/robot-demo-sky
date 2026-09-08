@@ -1,7 +1,9 @@
 package com.robot.demo.controller;
 
 import com.robot.demo.pojo.dto.TaskCreateDTO;
+import com.robot.demo.pojo.dto.TaskPageQueryDTO;
 import com.robot.demo.pojo.po.RobotTaskPO;
+import com.robot.demo.pojo.vo.PageResult;
 import com.robot.demo.pojo.vo.TaskVO;
 import com.robot.demo.service.RobotTaskService;
 import com.robot.demo.util.Result;
@@ -54,5 +56,14 @@ public class RobotTaskController {
     @PostMapping("/{taskNo}/cancel")
     public Result<TaskVO> cancel(@PathVariable String taskNo) {
         return Result.success(robotTaskService.cancelTask(taskNo));
+    }
+
+    /**
+     * 分页查询
+     * 例：/api/task/page?pageNum=1&pageSize=10&taskStatus=1
+     */
+    @GetMapping("/page")
+    public Result<PageResult<TaskVO>> page(@Valid TaskPageQueryDTO query) {
+        return Result.success(robotTaskService.pageTasks(query));
     }
 }

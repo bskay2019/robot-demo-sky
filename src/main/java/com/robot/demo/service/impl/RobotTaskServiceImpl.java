@@ -1,5 +1,7 @@
 package com.robot.demo.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.robot.demo.enums.TaskStatusEnum;
 import com.robot.demo.exception.BizException;
@@ -7,8 +9,10 @@ import com.robot.demo.mapper.RobotDeviceMapper;
 import com.robot.demo.mapper.RobotTaskMapper;
 import com.robot.demo.mq.RobotTaskProducer;
 import com.robot.demo.pojo.dto.TaskCreateDTO;
+import com.robot.demo.pojo.dto.TaskPageQueryDTO;
 import com.robot.demo.pojo.po.RobotDevicePO;
 import com.robot.demo.pojo.po.RobotTaskPO;
+import com.robot.demo.pojo.vo.PageResult;
 import com.robot.demo.pojo.vo.TaskVO;
 import com.robot.demo.service.RobotDeviceService;
 import com.robot.demo.service.RobotTaskService;
@@ -20,6 +24,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -130,5 +135,25 @@ public class RobotTaskServiceImpl extends ServiceImpl<RobotTaskMapper, RobotTask
         task.setTaskStatus(TaskStatusEnum.CANCELLED.getCode());
         log.info("【取消任务】成功 taskNo={}", taskNo);
         return TaskConvert.pOtoVO(task);
+    }
+
+    @Override
+    public PageResult<TaskVO> pageTasks(TaskPageQueryDTO query) {
+        int pageNum = query.getPageNum() == null ? 1 : query.getPageNum();
+        int pageSize = query.getPageSize() == null ? 10 : query.getPageSize();
+
+        LambdaQueryWrapper<RobotTaskPO> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(query.getTaskStatus() != null, RobotTaskPO::getTaskStatus, query.getTaskStatus())
+                .eq(StringUtils.hasText(query.getRobotCode()), RobotTaskPO::getRobotCode, query.getRobotCode())
+                .like(StringUtils.hasText(query.getTaskNo()), RobotTaskPO::getTaskNo, query.getTaskNo())
+                .orderByDesc(RobotTaskPO::getCreateTime);
+
+        Page<RobotTaskPO> page = page(new Page<>(pageNum, pageSize), wrapper);
+
+        List<TaskVO> records = page.getRecords().stream()
+                .map(TaskConvert::pOtoVO)
+                .toList();
+
+        return PageResult.of(page.getTotal(), page.getCurrent(), page.getSize(), records);
     }
 }
