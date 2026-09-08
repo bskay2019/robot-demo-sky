@@ -40,6 +40,8 @@ CREATE TABLE robot_task (
                             INDEX idx_robot_code (robot_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='机器人任务表';
 
--- 初始化测试数据：空闲机器人 R001
-INSERT INTO robot_device(robot_code,robot_name,status,position,battery)
-VALUES ('R001','一号搬运机器人',0,'A区‑01货架',85);
+-- 先插几台空闲机器人，否则 createTask 会报「没有空闲机器人」
+INSERT INTO robot_device (robot_code, robot_name, status, position, battery) VALUES
+ ('R001', '海柔AMR-01', 0, 'A-01', 95),
+ ('R002', '海柔AMR-02', 0, 'A-02', 88),
+ ('R003', '海柔AMR-03', 0, 'B-01', 76);

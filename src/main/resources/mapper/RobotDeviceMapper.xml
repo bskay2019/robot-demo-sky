@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.robot.demo.mapper.RobotDeviceMapper">
+
+    <update id="occupyIdleRobot">
+        UPDATE robot_device
+        SET status = 1,
+            update_time = NOW()
+        WHERE robot_code = #{robotCode}
+          AND status = 0
+    </update>
+
+</mapper>

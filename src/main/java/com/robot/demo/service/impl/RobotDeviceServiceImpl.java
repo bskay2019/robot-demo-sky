@@ -3,6 +3,7 @@ package com.robot.demo.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.robot.demo.enums.RobotStatusEnum;
 import com.robot.demo.mapper.RobotDeviceMapper;
 import com.robot.demo.pojo.po.RobotDevicePO;
 import com.robot.demo.service.RobotDeviceService;
@@ -30,31 +31,31 @@ public class RobotDeviceServiceImpl extends ServiceImpl<RobotDeviceMapper, Robot
 
     @Override
     public RobotDevicePO getIdleRobot() {
-        // 第一步：先查 Redis 缓存
+        // 1. 先查 Redis
         Object cachedRobot = redisTemplate.opsForValue().get(IDLE_ROBOT_KEY);
         if (cachedRobot != null) {
-            log.info("【Redis缓存命中】从缓存取到空闲机器人：{}", cachedRobot);
-            // 修复：LinkedHashMap → RobotDevicePO，禁止直接 (RobotDevicePO) 强转
+            log.info("【Redis缓存命中】空闲机器人：{}", cachedRobot);
             return objectMapper.convertValue(cachedRobot, RobotDevicePO.class);
         }
-
-        // 第二步：缓存没有，查数据库
+        // 2. 再查 DB：空闲可能有多台，必须 LIMIT 1
         log.info("【Redis缓存未命中】查询数据库找空闲机器人...");
         LambdaQueryWrapper<RobotDevicePO> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(RobotDevicePO::getStatus, 0); // 0=空闲
-        RobotDevicePO robot = getOne(wrapper);
-
-        // 第三步：查到后写入 Redis，缓存 5 分钟（防止脏数据）
+        wrapper.eq(RobotDevicePO::getStatus, RobotStatusEnum.IDLE.getCode())
+                .orderByDesc(RobotDevicePO::getBattery) // 可选：优先电量高的
+                .last("LIMIT 1");
+        // 第二个参数 false：即使万一查出多条也不抛 TooManyResultsException
+        RobotDevicePO robot = getOne(wrapper, false);
+        // 3. 写入缓存（5 分钟）
         if (robot != null) {
             redisTemplate.opsForValue().set(IDLE_ROBOT_KEY, robot, 5, TimeUnit.MINUTES);
-            log.info("【Redis缓存写入】空闲机器人已写入缓存，5分钟过期");
+            log.info("【Redis缓存写入】robotCode={}", robot.getRobotCode());
         }
-
         return robot;
     }
 
     @Override
     public void clearIdleRobotCache() {
-
+       boolean deleted= redisTemplate.delete(IDLE_ROBOT_KEY);
+        log.info("【Redis缓存清除】key={}, deleted={}", IDLE_ROBOT_KEY, deleted);
     }
 }

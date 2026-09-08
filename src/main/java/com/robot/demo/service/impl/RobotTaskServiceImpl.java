@@ -1,6 +1,10 @@
 package com.robot.demo.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.robot.demo.enums.RobotStatusEnum;
+import com.robot.demo.enums.TaskStatusEnum;
+import com.robot.demo.exception.BizException;
+import com.robot.demo.mapper.RobotDeviceMapper;
 import com.robot.demo.mapper.RobotTaskMapper;
 import com.robot.demo.mq.RobotTaskProducer;
 import com.robot.demo.pojo.po.RobotDevicePO;
@@ -17,67 +21,62 @@ import java.util.UUID;
 
 @Slf4j
 @Service
-public class RobotTaskServiceImpl extends ServiceImpl<RobotTaskMapper, RobotTaskPO> implements RobotTaskService {
-    private final RobotDeviceService robotDeviceService;
-    private final RobotTaskProducer robotTaskProducer;
-    private final RobotDeviceServiceImpl robotDeviceServiceImpl;
+public class RobotTaskServiceImpl extends ServiceImpl<RobotTaskMapper, RobotTaskPO>
+        implements RobotTaskService {
 
-    // 构造器注入
+    private final RobotDeviceService robotDeviceService;
+    private final RobotDeviceMapper robotDeviceMapper;
+    private final RobotTaskProducer robotTaskProducer;
+
     public RobotTaskServiceImpl(RobotDeviceService robotDeviceService,
-                                RobotTaskProducer robotTaskProducer,
-                                RobotDeviceServiceImpl robotDeviceServiceImpl) {
+                                RobotDeviceMapper robotDeviceMapper,
+                                RobotTaskProducer robotTaskProducer) {
         this.robotDeviceService = robotDeviceService;
+        this.robotDeviceMapper = robotDeviceMapper;
         this.robotTaskProducer = robotTaskProducer;
-        this.robotDeviceServiceImpl = robotDeviceServiceImpl;
     }
 
     @Transactional(rollbackFor = Exception.class)
     @Override
     public RobotTaskPO createTask(RobotTaskPO task) {
-        log.info("【创建任务】开始创建任务，任务类型：{}，目标位置：{}",
-                task.getTaskType(), task.getTargetPosition());
+        log.info("【创建任务】taskType={}, target={}", task.getTaskType(), task.getTargetPosition());
 
-        // 1. 生成唯一任务单号（UUID去掉横杠）
+        // 1. 生成任务单号
         String taskNo = "TASK" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         task.setTaskNo(taskNo);
+        task.setTaskStatus(TaskStatusEnum.PENDING.getCode());
 
-        // 2. 初始状态：待分配（0）
-        task.setTaskStatus(0);
-
-        // 3. 找一个空闲机器人
+        // 2. 找空闲机器人（可能来自缓存，仅作候选）
         RobotDevicePO idleRobot = robotDeviceService.getIdleRobot();
         if (idleRobot == null) {
-            log.error("【创建任务】没有空闲机器人可用！");
-            throw new RuntimeException("没有空闲机器人可用，请稍后再试");
+            throw new BizException("没有空闲机器人可用，请稍后再试");
         }
 
-        // 4. 分配机器人，任务状态改为"执行中"（1）
+        // 3. 原子占机：只有 status=0 才能改成 1
+        int occupied = robotDeviceMapper.occupyIdleRobot(idleRobot.getRobotCode());
+        if (occupied == 0) {
+            // 缓存可能脏了，清掉后提示重试（也可以在这里循环重试 2~3 次）
+            robotDeviceService.clearIdleRobotCache();
+            throw new BizException("机器人刚刚被占用，请重试");
+        }
+
+        // 4. 绑定机器人，状态改为执行中
         task.setRobotCode(idleRobot.getRobotCode());
-        task.setTaskStatus(1);
-
-        // 5. 保存任务到数据库
+        task.setTaskStatus(TaskStatusEnum.EXECUTING.getCode());
         save(task);
-        log.info("【创建任务】任务已保存到数据库，任务单号：{}，分配机器人：{}",
-                taskNo, idleRobot.getRobotCode());
+        log.info("【创建任务】落库成功 taskNo={}, robotCode={}", taskNo, idleRobot.getRobotCode());
 
-        // 6. 更新机器人状态为"工作中"（1）
-        idleRobot.setStatus(1);
-        robotDeviceService.updateById(idleRobot);
+        // 5. 清缓存（这台机器人已不再空闲）
+        robotDeviceService.clearIdleRobotCache();
 
-        // 7. 清除 Redis 中的空闲机器人缓存（这个机器人不再空闲了）
-        robotDeviceServiceImpl.clearIdleRobotCache();
-
-        // 8. 发送 MQ 消息，通知机器人执行任务
-        //✅注册事务回调：事务提交成功之后才执行发MQ
+        // 6. 事务提交后再发 MQ，避免回滚后消息已发出
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                //事务提交成功后，再发送MQ消息
                 robotTaskProducer.sendTaskMessage(taskNo);
             }
         });
 
-        log.info("【创建任务】任务创建完成，任务单号：{}", taskNo);
         return task;
     }
 }
