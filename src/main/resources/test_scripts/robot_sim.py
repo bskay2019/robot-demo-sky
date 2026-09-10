@@ -38,8 +38,8 @@ ROBOTS = [
         "battery": 95,
         "speed_mps": 1.2,
         "idle_speed_mps": 0.0,
-        "drain_idle_per_min": 0.05,   # 空闲很慢掉电
-        "drain_work_per_min": 0.80,   # 跑起来掉得快
+        "drain_idle_per_min": 3.0,    # 空闲约每秒 -0.05%
+        "drain_work_per_min": 30.0,   # 作业约每秒 -0.5%，8 秒任务约 -4%
     },
     {
         "robotCode": "R002",
@@ -47,17 +47,17 @@ ROBOTS = [
         "battery": 88,
         "speed_mps": 0.9,
         "idle_speed_mps": 0.0,
-        "drain_idle_per_min": 0.04,
-        "drain_work_per_min": 0.60,
+        "drain_idle_per_min": 2.4,
+        "drain_work_per_min": 24.0,
     },
     {
         "robotCode": "R003",
         "position": "B-01",
         "battery": 76,
-        "speed_mps": 1.5,            # 更快的车
+        "speed_mps": 1.5,
         "idle_speed_mps": 0.0,
-        "drain_idle_per_min": 0.06,
-        "drain_work_per_min": 1.20,  # 更快通常更费电
+        "drain_idle_per_min": 3.6,
+        "drain_work_per_min": 36.0,   # 最快车最费电
     },
 ]
 

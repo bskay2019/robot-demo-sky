@@ -5,8 +5,7 @@ import com.robot.demo.config.RabbitMqConfig;
 import com.robot.demo.enums.TaskStatusEnum;
 import com.robot.demo.mapper.RobotTaskMapper;
 import com.robot.demo.pojo.po.RobotTaskPO;
-import com.robot.demo.service.RobotDeviceService;
-import com.robot.demo.service.RobotTaskService;
+import com.robot.demo.southbound.handler.TcpMessageHandler;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.support.AmqpHeaders;
@@ -16,23 +15,24 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 
+/**
+ * MQ 消费者：收到任务后经南向 TCP 下发给在线机器人。
+ * 任务完成与机器人空闲释放由 UDP 遥测（taskStatus=2）处理。
+ */
 @Slf4j
 @Component
 public class RobotTaskConsumer {
 
-    private final RobotTaskService robotTaskService;
     private final RobotTaskMapper robotTaskMapper;
-    private final RobotDeviceService robotDeviceService;
     private final RobotTaskProducer robotTaskProducer;
+    private final TcpMessageHandler tcpMessageHandler;
 
-    public RobotTaskConsumer(RobotTaskService robotTaskService,
-                             RobotTaskMapper robotTaskMapper,
-                             RobotDeviceService robotDeviceService,
-                             RobotTaskProducer robotTaskProducer) {
-        this.robotTaskService = robotTaskService;
+    public RobotTaskConsumer(RobotTaskMapper robotTaskMapper,
+                             RobotTaskProducer robotTaskProducer,
+                             TcpMessageHandler tcpMessageHandler) {
         this.robotTaskMapper = robotTaskMapper;
-        this.robotDeviceService = robotDeviceService;
         this.robotTaskProducer = robotTaskProducer;
+        this.tcpMessageHandler = tcpMessageHandler;
     }
 
     @RabbitListener(queues = RabbitMqConfig.ROBOT_TASK_QUEUE)
@@ -48,65 +48,50 @@ public class RobotTaskConsumer {
 
         try {
             // 1. 幂等：只有执行中才处理
-            RobotTaskPO before = robotTaskMapper.selectByTaskNo(taskNo);
-            if (before == null) {
+            RobotTaskPO task = robotTaskMapper.selectByTaskNo(taskNo);
+            if (task == null) {
                 log.error("【MQ消费者】任务不存在，直接 ACK 丢弃 taskNo={}", taskNo);
                 channel.basicAck(deliveryTag, false);
                 return;
             }
-            if (!canExecute(before.getTaskStatus())) {
+            if (!canExecute(task.getTaskStatus())) {
                 log.warn("【MQ消费者】状态不可执行，直接 ACK 跳过 taskNo={}, status={}",
-                        taskNo, TaskStatusEnum.getDescByCode(before.getTaskStatus()));
+                        taskNo, TaskStatusEnum.getDescByCode(task.getTaskStatus()));
                 channel.basicAck(deliveryTag, false);
                 return;
             }
 
-            // 2. 模拟执行（测通后保持 3 秒即可）
-            Thread.sleep(3000);
-
-            // 测试死信/重试用：remark 包含 FAIL 就故意抛错
-            // 创建任务时传 "FAIL-测试重试"，即可走失败分支
-            if (StringUtils.hasText(before.getRemark()) && before.getRemark().contains("FAIL")) {
-                throw new RuntimeException("模拟执行失败：remark=" + before.getRemark());
+            if (!StringUtils.hasText(task.getRobotCode())) {
+                throw new RuntimeException("任务未分配机器人 robotCode 为空, taskNo=" + taskNo);
             }
 
-            // 3. 执行后再查状态（期间可能已取消）
-            RobotTaskPO task = robotTaskMapper.selectByTaskNo(taskNo);
-            if (task == null || !canExecute(task.getTaskStatus())) {
-                log.warn("【MQ消费者】执行后状态不可完成，ACK 跳过 taskNo={}", taskNo);
-                channel.basicAck(deliveryTag, false);
-                return;
+            // 测试死信/重试：remark 包含 FAIL 仍可故意失败
+            if (StringUtils.hasText(task.getRemark()) && task.getRemark().contains("FAIL")) {
+                throw new RuntimeException("模拟下发失败：remark=" + task.getRemark());
             }
 
-            // 4. 乐观更新为完成
-            boolean updated = robotTaskService.lambdaUpdate()
-                    .set(RobotTaskPO::getTaskStatus, TaskStatusEnum.COMPLETED.getCode())
-                    .eq(RobotTaskPO::getId, task.getId())
-                    .eq(RobotTaskPO::getTaskStatus, TaskStatusEnum.EXECUTING.getCode())
-                    .update();
+            // 2. 通过南向 TCP 把任务发给机器人
+            int taskType = task.getTaskType() == null ? 1 : task.getTaskType();
+            boolean sent = tcpMessageHandler.dispatchTask(
+                    task.getRobotCode(),
+                    task.getTaskNo(),
+                    taskType,
+                    task.getTargetPosition(),
+                    task.getRemark()
+            );
 
-            if (!updated) {
-                log.warn("【MQ消费者】完成更新失败，ACK 跳过 taskNo={}", taskNo);
-                channel.basicAck(deliveryTag, false);
-                return;
+            if (!sent) {
+                throw new RuntimeException("TCP 下发失败，机器人可能不在线 robotCode="
+                        + task.getRobotCode() + ", taskNo=" + taskNo);
             }
 
-            if (StringUtils.hasText(task.getRobotCode())) {
-                robotTaskMapper.setRobotIdle(task.getRobotCode());
-                robotDeviceService.clearIdleRobotCache();
-            }
-
-            // 5. 成功：手动 ACK
+            // 3. 下发成功即可 ACK（完成态由 UDP 上报驱动）
             channel.basicAck(deliveryTag, false);
-            log.info("【MQ消费者】完成并 ACK taskNo={}, robotCode={}", taskNo, task.getRobotCode());
+            log.info("【MQ消费者】已 TCP 下发并 ACK taskNo={}, robotCode={}",
+                    taskNo, task.getRobotCode());
 
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("【MQ消费者】被中断 taskNo={}", taskNo, e);
-            // 中断场景：不重入队，进入死信（避免毒消息循环）
-            channel.basicNack(deliveryTag, false, false);
         } catch (Exception e) {
-            log.error("【MQ消费者】执行失败 taskNo={}, retryCount={}", taskNo, currentRetry, e);
+            log.error("【MQ消费者】下发失败 taskNo={}, retryCount={}", taskNo, currentRetry, e);
             handleFailure(taskNo, channel, deliveryTag, currentRetry);
         }
     }
@@ -122,14 +107,12 @@ public class RobotTaskConsumer {
             log.warn("【MQ消费者】准备重试 taskNo={}, nextRetry={}/{}",
                     taskNo, nextRetry, RabbitMqConfig.MAX_RETRY_COUNT);
 
-            // 重新发一条（retry+1），然后 ACK 当前这条，避免同一条消息卡死
             robotTaskProducer.sendTaskMessage(taskNo, nextRetry);
             channel.basicAck(deliveryTag, false);
             return;
         }
 
         log.error("【MQ消费者】重试耗尽，进入死信 taskNo={}, retryCount={}", taskNo, currentRetry);
-        // requeue=false → 触发队列 DLX → 进入死信队列
         channel.basicNack(deliveryTag, false, false);
     }
 
